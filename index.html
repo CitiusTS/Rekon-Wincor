@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ATM Rekon App</title>
+<style>
+:root{--bg:#f4f6f9;--card:#ffffff;--text:#1d2330;--muted:#667085;--line:#dfe3ea;--accent:#1f3864;--ok:#0f7b3c;--bad:#b42318;--warn:#b54708;--input:#fff7c2;--sub:#e8eef9;color-scheme:light}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#111418;--card:#1a1e25;--text:#e8ebf0;--muted:#9aa3b2;--line:#2c323c;--accent:#8fb0ea;--ok:#4cc38a;--bad:#f97066;--warn:#fdb022;--input:#3a3412;--sub:#232a36;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#111418;--card:#1a1e25;--text:#e8ebf0;--muted:#9aa3b2;--line:#2c323c;--accent:#8fb0ea;--ok:#4cc38a;--bad:#f97066;--warn:#fdb022;--input:#3a3412;--sub:#232a36;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;font-family:Arial,Helvetica,sans-serif;background:var(--bg);color:var(--text);font-size:14px;padding:env(safe-area-inset-top,0px) 12px env(safe-area-inset-bottom,0px)}
+header{padding:16px 4px 4px}
+h1{font-size:20px;margin:0;color:var(--accent)}
+header p{margin:4px 0 0;color:var(--muted)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin:12px 0}
+h2{font-size:15px;margin:0 0 10px;color:var(--accent)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{color:var(--muted);font-weight:600;font-size:12px}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+.wrap{overflow-x:auto}
+input[type=number],input[type=datetime-local],select{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--text);width:140px}
+input.fill{background:var(--input);border-color:#e0b400}
+.drop{border:2px dashed var(--line);border-radius:10px;padding:18px;text-align:center;color:var(--muted)}
+.drop.over{border-color:var(--accent);color:var(--accent)}
+button{font:inherit;padding:8px 14px;border-radius:6px;border:0;background:var(--accent);color:#fff;cursor:pointer}
+button.ghost{background:transparent;color:var(--accent);border:1px solid var(--line)}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:8px 0}
+.lbl{color:var(--muted);font-size:12px}
+.ok{color:var(--ok);font-weight:600}.bad{color:var(--bad);font-weight:600}.warn{color:var(--warn);font-weight:600}
+.muted{color:var(--muted)}
+.tag{display:inline-block;padding:2px 6px;border-radius:4px;background:var(--sub);font-size:11px;margin:1px 2px 1px 0}
+.verdict{padding:12px;border-radius:8px;background:var(--sub);margin-top:10px;line-height:1.5}
+.small{font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>ATM Rekon App</h1>
+  <p>Rekonsiliasi log transaksi ATM, counter mesin, dan opname fisik kas. Data diproses di browser Anda dan tidak dikirim ke mana pun.</p>
+</header>
+
+<section class="card">
+  <h2>1. Upload log jurnal</h2>
+  <div id="drop" class="drop">Seret file .jrn / .txt ke sini, atau <label style="color:var(--accent);cursor:pointer;text-decoration:underline">pilih file<input id="file" type="file" multiple accept=".jrn,.txt,.log" style="display:none"></label><br><span class="small">Bisa beberapa file sekaligus. Setiap file dianggap satu hari.</span></div>
+  <div id="fileList" class="small" style="margin-top:8px"></div>
+</section>
+
+<section class="card" id="secSummary" hidden>
+  <h2>2. Ringkasan per hari</h2>
+  <div class="wrap"><table id="tblDaily"></table></div>
+</section>
+
+<section class="card" id="secOpname" hidden>
+  <h2>3. Opname fisik</h2>
+  <div class="row">
+    <div><div class="lbl">Batas waktu opname (kosongkan = semua transaksi)</div><input id="cutoff" type="datetime-local"></div>
+    <div><div class="lbl">Counter acuan (blok counter di log)</div><select id="refBlock" style="width:auto;max-width:100%"></select></div>
+  </div>
+  <div class="wrap"><table>
+    <tr><th>Kaset</th><th class="n">Isi awal (lembar)</th><th class="n">Fisik sisa kaset</th><th class="n">Fisik reject</th></tr>
+    <tr><td>Kaset 1</td><td class="n"><input id="load1" type="number" value="2000"></td><td class="n"><input id="rem1" type="number" class="fill"></td><td class="n"><input id="rej1" type="number" class="fill"></td></tr>
+    <tr><td>Kaset 2</td><td class="n"><input id="load2" type="number" value="2000"></td><td class="n"><input id="rem2" type="number" class="fill"></td><td class="n"><input id="rej2" type="number" class="fill"></td></tr>
+  </table></div>
+  <div class="row" style="margin-top:12px">
+    <div><div class="lbl">Atau total fisik (sisa + reject), jika hanya punya total</div><input id="totFisik" type="number" class="fill"></div>
+  </div>
+  <div class="row"><button id="btnCalc">Hitung rekonsiliasi</button><button class="ghost" id="btnReset">Kosongkan input</button></div>
+</section>
+
+<section class="card" id="secResult" hidden>
+  <h2>4. Hasil rekonsiliasi</h2>
+  <div class="wrap"><table id="tblResult"></table></div>
+  <div id="verdict" class="verdict"></div>
+</section>
+
+<section class="card" id="secSop" hidden>
+  <h2>5. Counter dan log SOP per file</h2>
+  <div class="wrap"><table id="tblSop"></table></div>
+</section>
+
+<section class="card" id="secTxn" hidden>
+  <h2>6. Detail transaksi</h2>
+  <div class="row">
+    <select id="fKaset"><option value="">Semua kaset</option><option value="1">Kaset 1</option><option value="2">Kaset 2</option></select>
+    <select id="fStatus"><option value="">Semua status</option><option value="tidak">Tidak diambil saja</option></select>
+    <span class="muted small" id="txnCount"></span>
+  </div>
+  <div class="wrap"><table id="tblTxn"></table></div>
+</section>
+
+<footer class="small muted" style="padding:8px 4px 24px">Format log yang dibaca: baris <code>CASH REQUEST</code>, <code>CASH n:c,k;</code>, <code>CASH PRESENTED</code>, <code>CASH TAKEN</code>, blok tabel <code>TYPE 1 TYPE 2</code> (CASSETTE / +REJECTED / +DISPENSED / =TOTAL), dan blok <code>CASH COUNTERS BEFORE/AFTER SOP</code>.</footer>
+
+<script>
+// ================= STATE =================
+const state = { files: [], txns: [], blocks: [], sops: [] };
+
+// ================= UTIL =================
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt = n => (n === null || n === undefined || n === "" || Number.isNaN(n)) ? "-" : Number(n).toLocaleString("id-ID");
+const fmtRp = n => (n === null || n === undefined || Number.isNaN(n)) ? "-" : "Rp " + Number(n).toLocaleString("id-ID");
+const signed = n => (n === null || n === undefined || Number.isNaN(n)) ? "-" : (n > 0 ? "+" : "") + Number(n).toLocaleString("id-ID");
+const cls = n => (n === null || n === undefined || Number.isNaN(n)) ? "" : (n === 0 ? "ok" : "bad");
+
+function fileDateOf(name, text) {
+  // Prefer date embedded in the file name (YYYYMMDD), otherwise the most common dd/mm/yy in the log.
+  const m = name.match(/(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  const counts = {};
+  const re = /(\d{2})\/(\d{2})\/(\d{2})\s+\d{2}:\d{2}:\d{2}\s+EMV/g;
+  let x; while ((x = re.exec(text))) { const d = `20${x[3]}-${x[2]}-${x[1]}`; counts[d] = (counts[d] || 0) + 1; }
+  const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+  return best ? best[0] : "";
+}
+
+// ================= PARSER =================
+// Returns { name, date, txns[], blocks[], sops[] }
+function parseJournal(text, name) {
+  const lines = text.replace(/\r/g, "").split("\n");
+  const date = fileDateOf(name, text);
+  const txns = [], blocks = [], sops = [];
+  let pend = null, pendTaken = false, lastTxn = null, lastTime = "", blk = null, sop = null;
+
+  for (const raw of lines) {
+    const l = raw.replace(/\s+$/, "");
+    let m;
+    if ((m = l.match(/^(\d{2}:\d{2}:\d{2})/))) lastTime = m[1];
+
+    // --- cash counter table (TYPE 1 TYPE 2 block) ---
+    if (/TYPE 1\s+TYPE 2/.test(l)) { blk = { file: name, date, time: lastTime, c: null, r: null, d: null, tot: null }; continue; }
+    if (blk) {
+      if ((m = l.match(/^\s*CASSETTE\s+(\d+)\s+(\d+)/))) { blk.c = [+m[1], +m[2]]; continue; }
+      if ((m = l.match(/^\s*\+REJECTED\s+(\d+)\s+(\d+)/))) { blk.r = [+m[1], +m[2]]; continue; }
+      if ((m = l.match(/^\s*\+DISPENSED\s+(\d+)\s+(\d+)/))) { blk.d = [+m[1], +m[2]]; continue; }
+      if ((m = l.match(/^\s*=TOTAL\s+(\d+)\s+(\d+)/))) { blk.tot = [+m[1], +m[2]]; if (blk.c && blk.r && blk.d) blocks.push(blk); blk = null; continue; }
+    }
+
+    // --- SOP cash counters ---
+    if ((m = l.match(/CASH COUNTERS (BEFORE|AFTER) SOP/))) { sop = { file: name, date, time: lastTime, type: m[1], rows: [], rejects: null }; continue; }
+    if (sop) {
+      if ((m = l.match(/IDR\s+\d+\s+(\d+)\*?/))) { sop.rows.push(+m[1]); continue; }
+      if ((m = l.match(/REJECTS:\s*(\d+)/))) { sop.rejects = +m[1]; sops.push(sop); sop = null; continue; }
+    }
+
+    // --- transactions ---
+    if ((m = l.match(/^(\d{2}:\d{2}:\d{2})\s+CASH REQUEST:\s*(\d+)/))) { pend = { t: m[1], req: +m[2], cass: null }; pendTaken = false; continue; }
+    if (pend && (m = l.match(/^\d{2}:\d{2}:\d{2}\s+CASH (\d):(\d),(\d+);/))) { pend.cass = +m[2]; continue; }
+    if (pend && /CASH PRESENTED/.test(l)) {
+      if (pend.cass !== null) {
+        lastTxn = { file: name, date, time: pend.t, kaset: pend.cass, lembar: pend.req, taken: pendTaken, notes: [] };
+        txns.push(lastTxn);
+      }
+      pend = null; continue;
+    }
+    if (/CASH TAKEN/.test(l)) {
+      // Log kadang mencatat CASH TAKEN sebelum CASH PRESENTED (satu transaksi).
+      if (pend) pendTaken = true; else if (lastTxn) lastTxn.taken = true;
+      continue;
+    }
+    if (lastTxn && /(TIMER EXPIRED|RETRACT|Present ERROR)/.test(l) && !lastTxn.taken) {
+      lastTxn.notes.push(l.replace(/^\*?\d*\*?\s*/, "").trim());
+    }
+  }
+  return { name, date, txns, blocks, sops };
+}
+
+// ================= LOAD FILES =================
+async function loadFiles(fileList) {
+  for (const f of fileList) {
+    if (state.files.some(x => x.name === f.name)) continue;
+    const text = await f.text();
+    const parsed = parseJournal(text, f.name);
+    state.files.push(parsed);
+  }
+  rebuild();
+}
+
+function rebuild() {
+  state.txns = []; state.blocks = []; state.sops = [];
+  state.files.sort((a, b) => (a.date + a.name).localeCompare(b.date + b.name));
+  for (const f of state.files) {
+    for (const t of f.txns) state.txns.push({ ...t, dt: t.date + "T" + t.time });
+    state.blocks.push(...f.blocks);
+    state.sops.push(...f.sops);
+  }
+  state.txns.sort((a, b) => a.dt.localeCompare(b.dt));
+  renderFiles(); renderDaily(); renderSop(); renderRefBlocks(); renderTxn();
+  const has = state.files.length > 0;
+  $("secSummary").hidden = !has; $("secOpname").hidden = !has; $("secSop").hidden = !has; $("secTxn").hidden = !has;
+}
+
+// ================= RENDER =================
+function renderFiles() {
+  if (!state.files.length) { $("fileList").innerHTML = ""; return; }
+  $("fileList").innerHTML = state.files.map(f =>
+    `<span class="tag">${esc(f.name)}</span> <span class="muted">tanggal ${esc(f.date || "?")}, ${f.txns.length} transaksi</span>`
+  ).join("<br>");
+}
+
+function renderDaily() {
+  const byDay = {};
+  for (const t of state.txns) {
+    const d = t.date || "?";
+    byDay[d] = byDay[d] || { k1: 0, k2: 0, n: 0, nt: 0, nTaken: 0 };
+    if (t.kaset === 1) byDay[d].k1 += t.lembar; else byDay[d].k2 += t.lembar;
+    byDay[d].n++; if (!t.taken) byDay[d].nt += t.lembar;
+  }
+  const days = Object.keys(byDay).sort();
+  let T = { k1: 0, k2: 0, n: 0, nt: 0 };
+  let rows = days.map(d => {
+    const x = byDay[d]; T.k1 += x.k1; T.k2 += x.k2; T.n += x.n; T.nt += x.nt;
+    return `<tr><td>${esc(d)}</td><td class="n">${fmt(x.k1)}</td><td class="n">${fmt(x.k2)}</td><td class="n"><b>${fmt(x.k1 + x.k2)}</b></td><td class="n">${fmtRp((x.k1 + x.k2) * 100000)}</td><td class="n">${fmt(x.n)}</td><td class="n">${x.nt ? `<span class="warn">${fmt(x.nt)}</span>` : "0"}</td></tr>`;
+  }).join("");
+  $("tblDaily").innerHTML = `<tr><th>Tanggal</th><th class="n">Kaset 1</th><th class="n">Kaset 2</th><th class="n">Total lembar</th><th class="n">Nominal</th><th class="n">Transaksi</th><th class="n">Lembar tidak diambil</th></tr>${rows}
+  <tr><th>TOTAL</th><th class="n">${fmt(T.k1)}</th><th class="n">${fmt(T.k2)}</th><th class="n">${fmt(T.k1 + T.k2)}</th><th class="n">${fmtRp((T.k1 + T.k2) * 100000)}</th><th class="n">${fmt(T.n)}</th><th class="n">${fmt(T.nt)}</th></tr>`;
+}
+
+function renderSop() {
+  let rows = state.blocks.map(b => `<tr><td>${esc(b.date)} ${esc(b.time)}</td><td class="small">${esc(b.file)}</td><td class="n">${fmt(b.c[0])} / ${fmt(b.c[1])}</td><td class="n">${fmt(b.r[0])} / ${fmt(b.r[1])}</td><td class="n">${fmt(b.d[0])} / ${fmt(b.d[1])}</td></tr>`).join("");
+  let sopRows = state.sops.map(s => `<tr><td>${esc(s.date)} ${esc(s.time)}</td><td>${s.type === "BEFORE" ? "Sebelum SOP" : "Sesudah SOP"}</td><td class="n">${s.rows.map(fmt).join(" / ")}</td><td class="n">${fmt(s.rejects)}</td></tr>`).join("");
+  $("tblSop").innerHTML = `<tr><th>Waktu blok counter</th><th>File</th><th class="n">Sisa kaset (1 / 2)</th><th class="n">Reject (1 / 2)</th><th class="n">Dispensed (1 / 2)</th></tr>${rows || `<tr><td colspan="5" class="muted">Tidak ada blok counter.</td></tr>`}</table>
+  <br><table><tr><th>Waktu SOP</th><th>Jenis</th><th class="n">Sisa per slot IDR 100.000</th><th class="n">Reject</th></tr>${sopRows || `<tr><td colspan="4" class="muted">Tidak ada log SOP.</td></tr>`}`;
+}
+
+function renderRefBlocks() {
+  const sel = $("refBlock");
+  if (!state.blocks.length) { sel.innerHTML = `<option value="">(tidak ada blok counter)</option>`; return; }
+  sel.innerHTML = state.blocks.map((b, i) => `<option value="${i}">${esc(b.date)} ${esc(b.time)} | disp ${fmt(b.d[0])}/${fmt(b.d[1])} | sisa ${fmt(b.c[0])}/${fmt(b.c[1])}</option>`).join("");
+  // default: last block before cutoff (if cutoff set), else last block
+  autoPickBlock();
+}
+
+// Default counter acuan: blok terakhir sebelum batas opname yang masih berisi data dispense
+// (blok setelah clear/isi ulang bernilai 0 dan tidak dipakai). Tanpa batas: blok terakhir.
+function pickRefIndex(blocks, co) {
+  if (!blocks.length) return -1;
+  if (!co) return blocks.length - 1;
+  let idx = -1, fallback = -1;
+  blocks.forEach((b, i) => {
+    if ((b.date + "T" + b.time) <= co) {
+      fallback = i;
+      if (b.d[0] + b.d[1] > 0) idx = i;
+    }
+  });
+  return idx >= 0 ? idx : (fallback >= 0 ? fallback : blocks.length - 1);
+}
+
+function autoPickBlock() {
+  const pick = pickRefIndex(state.blocks, cutoffIso());
+  if (pick >= 0) $("refBlock").value = String(pick);
+}
+
+function cutoffIso() {
+  const v = $("cutoff").value;
+  if (!v) return "";
+  return v.length === 16 ? v + ":59" : v;
+}
+
+function renderTxn() {
+  const k = $("fKaset").value, st = $("fStatus").value;
+  const list = state.txns.filter(t => (!k || String(t.kaset) === k) && (!st || !t.taken));
+  $("txnCount").textContent = `${fmt(list.length)} transaksi ditampilkan dari ${fmt(state.txns.length)}`;
+  $("tblTxn").innerHTML = `<tr><th>Tanggal</th><th>Jam</th><th class="n">Kaset</th><th class="n">Lembar</th><th class="n">Nominal</th><th>Status</th><th>Catatan</th><th>File</th></tr>` +
+    list.map(t => `<tr><td>${esc(t.date)}</td><td>${esc(t.time)}</td><td class="n">${t.kaset}</td><td class="n">${fmt(t.lembar)}</td><td class="n">${fmtRp(t.lembar * 100000)}</td><td>${t.taken ? "Diambil" : `<span class="warn">Tidak diambil</span>`}</td><td class="small">${esc(t.notes.join("; "))}</td><td class="small muted">${esc(t.file)}</td></tr>`).join("");
+}
+
+// ================= RECONCILIATION =================
+function reconcile() {
+  const blk = state.blocks[+$("refBlock").value];
+  if (!blk) { alert("Belum ada blok counter di log."); return; }
+  const co = cutoffIso();
+  const load = [+$("load1").value || 0, +$("load2").value || 0];
+  const remF = [$("rem1").value, $("rem2").value].map(v => v === "" ? null : +v);
+  const rejF = [$("rej1").value, $("rej2").value].map(v => v === "" ? null : +v);
+  const totF = $("totFisik").value === "" ? null : +$("totFisik").value;
+
+  // journal sums up to cutoff (or all)
+  const jr = [0, 0], jrNT = [0, 0];
+  for (const t of state.txns) {
+    if (co && t.dt > co) continue;
+    jr[t.kaset - 1] += t.lembar; if (!t.taken) jrNT[t.kaset - 1] += t.lembar;
+  }
+
+  const cSisa = blk.c, cRej = blk.r, cDisp = blk.d;
+  const cTot = [cSisa[0] + cRej[0], cSisa[1] + cRej[1]];
+  const fisDispPerK = [0, 1].map(i => (remF[i] !== null && rejF[i] !== null) ? load[i] - remF[i] - rejF[i] : null);
+  const fisTotPerK = [0, 1].map(i => (remF[i] !== null && rejF[i] !== null) ? remF[i] + rejF[i] : null);
+  const sumOrNull = a => a.some(v => v === null) ? null : a[0] + a[1];
+
+  const rows = [
+    ["Isi awal kaset (input)", load[0], load[1], load[0] + load[1], "n"],
+    ["Counter: dispensed", cDisp[0], cDisp[1], cDisp[0] + cDisp[1], "n"],
+    ["Counter: sisa di kaset", cSisa[0], cSisa[1], cSisa[0] + cSisa[1], "n"],
+    ["Counter: reject", cRej[0], cRej[1], cRej[0] + cRej[1], "n"],
+    ["Counter: sisa + reject", cTot[0], cTot[1], cTot[0] + cTot[1], "n"],
+    ["Jurnal: lembar keluar (s/d batas)", jr[0], jr[1], jr[0] + jr[1], "n"],
+    ["Jurnal: tidak diambil nasabah (sudah termasuk di atas)", jrNT[0], jrNT[1], jrNT[0] + jrNT[1], "n"],
+    ["Fisik: sisa kaset", remF[0], remF[1], sumOrNull(remF), "n"],
+    ["Fisik: reject", rejF[0], rejF[1], sumOrNull(rejF), "n"],
+    ["Fisik: sisa + reject", fisTotPerK[0], fisTotPerK[1], sumOrNull(fisTotPerK), "n"],
+    ["Fisik: lembar keluar (isi awal - sisa - reject)", fisDispPerK[0], fisDispPerK[1], sumOrNull(fisDispPerK), "n"],
+  ];
+  const diffs = [];
+  const diffRow = (label, a, b, c, d) => diffs.push([label, a, b, c, d]);
+  const dd = (x, y) => (x === null || y === null) ? null : x - y;
+  diffRow("Selisih counter - jurnal (lembar keluar)", cDisp[0] - jr[0], cDisp[1] - jr[1], cDisp[0] + cDisp[1] - (jr[0] + jr[1]));
+  diffRow("Selisih fisik - counter (lembar keluar)", dd(fisDispPerK[0], cDisp[0]), dd(fisDispPerK[1], cDisp[1]), dd(sumOrNull(fisDispPerK), cDisp[0] + cDisp[1]));
+  diffRow("Selisih fisik - jurnal (lembar keluar)", dd(fisDispPerK[0], jr[0]), dd(fisDispPerK[1], jr[1]), dd(sumOrNull(fisDispPerK), jr[0] + jr[1]));
+  diffRow("Selisih fisik sisa - counter sisa", dd(remF[0], cSisa[0]), dd(remF[1], cSisa[1]), dd(sumOrNull(remF), cSisa[0] + cSisa[1]));
+  diffRow("Selisih fisik reject - counter reject", dd(rejF[0], cRej[0]), dd(rejF[1], cRej[1]), dd(sumOrNull(rejF), cRej[0] + cRej[1]));
+
+  let html = `<tr><th></th><th class="n">Kaset 1</th><th class="n">Kaset 2</th><th class="n">Total</th></tr>`;
+  html += rows.map(r => `<tr><td>${esc(r[0])}</td><td class="n">${fmt(r[1])}</td><td class="n">${fmt(r[2])}</td><td class="n"><b>${fmt(r[3])}</b></td></tr>`).join("");
+  html += `<tr><th colspan="4">Selisih</th></tr>`;
+  html += diffs.map(r => `<tr><td>${esc(r[0])}</td><td class="n ${cls(r[1])}">${signed(r[1])}</td><td class="n ${cls(r[2])}">${signed(r[2])}</td><td class="n ${cls(r[3])}"><b>${signed(r[3])}</b></td></tr>`).join("");
+  $("tblResult").innerHTML = html;
+
+  // verdict
+  const parts = [];
+  parts.push(`Counter acuan: ${esc(blk.date)} ${esc(blk.time)}. Batas jurnal: ${co ? esc(co.replace("T", " ")) : "semua transaksi"}.`);
+  if (totF !== null) {
+    const seharusnya = cTot[0] + cTot[1];
+    const sel = totF - seharusnya;
+    parts.push(`Total fisik (sisa + reject) ${fmt(totF)} dibanding counter ${fmt(seharusnya)}: selisih <b class="${cls(sel)}">${signed(sel)} lembar</b> (${sel === 0 ? "sesuai" : sel < 0 ? "fisik kurang" : "fisik lebih"}).`);
+    const keluarFisik = load[0] + load[1] - totF;
+    const keluarCounter = cDisp[0] + cDisp[1];
+    const sel2 = keluarFisik - keluarCounter;
+    parts.push(`Lembar keluar menurut fisik (isi awal ${fmt(load[0]+load[1])} - total fisik) = ${fmt(keluarFisik)}; counter dispensed = ${fmt(keluarCounter)}; selisih <b class="${cls(sel2)}">${signed(sel2)} lembar</b>.`);
+  }
+  if (remF[0] !== null && rejF[0] !== null && remF[1] !== null && rejF[1] !== null) {
+    const s = sumOrNull(fisDispPerK) - (cDisp[0] + cDisp[1]);
+    parts.push(`Per kaset: selisih dispense kaset 1 ${signed(fisDispPerK[0]-cDisp[0])}, kaset 2 ${signed(fisDispPerK[1]-cDisp[1])}.`);
+  }
+  if (co === "" ) parts.push(`<span class="muted">Tanpa batas waktu, jurnal mencakup seluruh file. Isi batas waktu opname agar perbandingan dengan jurnal sesuai periode.</span>`);
+  parts.push(`Selisih counter vs jurnal ${signed(cDisp[0]+cDisp[1]-(jr[0]+jr[1]))} lembar. Selisih ini wajar jika ada transaksi di luar file jurnal yang diunggah (misalnya hari sebelumnya).`);
+  $("verdict").innerHTML = parts.join("<br>");
+  $("secResult").hidden = false;
+  $("secResult").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// ================= EVENTS =================
+const drop = $("drop");
+$("file").addEventListener("change", e => loadFiles([...e.target.files]));
+["dragenter","dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", e => loadFiles([...e.dataTransfer.files]));
+$("cutoff").addEventListener("change", () => { autoPickBlock(); });
+$("btnCalc").addEventListener("click", reconcile);
+$("btnReset").addEventListener("click", () => {
+  ["rem1","rej1","rem2","rej2","totFisik"].forEach(id => $(id).value = "");
+  $("secResult").hidden = true;
+});
+$("fKaset").addEventListener("change", renderTxn);
+$("fStatus").addEventListener("change", renderTxn);
+</script>
+</body>
+</html>
