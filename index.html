@@ -72,6 +72,8 @@ button.ghost{background:transparent;color:var(--accent);border:1px solid var(--l
 <section class="card" id="secResult" hidden>
   <h2>4. Hasil rekonsiliasi</h2>
   <div class="wrap"><table id="tblResult"></table></div>
+  <h2 style="margin-top:14px">Segmen periode (clear / add cash)</h2>
+  <div class="wrap"><table id="tblSeg"></table></div>
   <div id="verdict" class="verdict"></div>
 </section>
 
@@ -273,25 +275,81 @@ const numOrNull = id => ($(id).value === "" ? null : +$(id).value);
 const sum2 = a => (a[0] === null || a[1] === null || a[0] === undefined || a[1] === undefined) ? null : a[0] + a[1];
 const dd = (x, y) => (x === null || y === null || x === undefined || y === undefined) ? null : x - y;
 
+// ================= SEGMENTS (clear / add cash di tengah periode) =================
+// Segmen dibatasi oleh reset counter: total dispense turun (clear/opname).
+// Penambahan kaset: total kaset naik sementara dispense tidak berubah (add cash).
+const tsOf = b => b.date + "T" + b.time;
+const dsumOf = b => b.d[0] + b.d[1];
+const bsumOf = b => b.c[0] + b.c[1] + b.r[0] + b.r[1] + b.d[0] + b.d[1];
+
+function buildSegments(co) {
+  const bl = state.blocks.filter(b => bsumOf(b) > 0 && (!co || tsOf(b) <= co));
+  const segs = [];
+  let cur = { start: null, end: null, isi: null, adds: [0, 0], last: null, snap: null };
+  for (const b of bl) {
+    if (cur.last && dsumOf(b) < dsumOf(cur.last)) {
+      cur.end = tsOf(b); cur.snap = cur.last; segs.push(cur);
+      cur = { start: tsOf(b), end: null, isi: [b.c[0], b.c[1]], adds: [0, 0], last: b, snap: null };
+      continue;
+    }
+    if (cur.last && dsumOf(b) === dsumOf(cur.last)) {
+      for (let i = 0; i < 2; i++) if (b.c[i] > cur.last.c[i]) cur.adds[i] += b.c[i] - cur.last.c[i];
+    }
+    cur.last = b;
+  }
+  if (cur.last) { cur.snap = cur.last; segs.push(cur); }
+  return segs;
+}
+
+function segJournal(seg, co) {
+  const lo = seg.start || "";
+  const hi = seg.end || co || "9999";
+  const j = [0, 0], nt = [0, 0];
+  for (const t of state.txns) {
+    if (t.dt > lo && t.dt <= hi) { j[t.kaset - 1] += t.lembar; if (!t.taken) nt[t.kaset - 1] += t.lembar; }
+  }
+  return { j, nt };
+}
+
 function compute() {
-  const blk = state.blocks[+$("refBlock").value] || null;
   const co = cutoffIso();
-  const load = [+$("load1").value || 0, +$("load2").value || 0];
+  const segs = buildSegments(co);
+  const refBlk = state.blocks[+$("refBlock").value] || null;
+  const seg = refBlk ? (segs.find(s => s.snap === refBlk) || null) : null;
+  const userLoad = [+$("load1").value || 0, +$("load2").value || 0];
+  const base = (seg && seg.start) ? seg.isi : userLoad;
+  const load = seg ? [base[0] + seg.adds[0], base[1] + seg.adds[1]] : userLoad;
+  const jrs = seg ? segJournal(seg, co) : { j: [0, 0], nt: [0, 0] };
+  const jr = jrs.j, jrNT = jrs.nt;
   const remF = [numOrNull("rem1"), numOrNull("rem2")];
   const rejF = [numOrNull("rej1"), numOrNull("rej2")];
   const totF = numOrNull("totFisik");
-  const jr = [0, 0], jrNT = [0, 0], jrN = [0, 0];
-  for (const t of state.txns) {
-    if (co && t.dt > co) continue;
-    jr[t.kaset - 1] += t.lembar; jrN[t.kaset - 1]++;
-    if (!t.taken) jrNT[t.kaset - 1] += t.lembar;
-  }
-  const cSisa = blk ? blk.c : [0, 0], cRej = blk ? blk.r : [0, 0], cDisp = blk ? blk.d : [0, 0];
+  const snap = seg ? seg.snap : null;
+  const cSisa = snap ? snap.c : [0, 0], cRej = snap ? snap.r : [0, 0], cDisp = snap ? snap.d : [0, 0];
   const cTot = [cSisa[0] + cRej[0], cSisa[1] + cRej[1]];
   const fisDisp = [0, 1].map(i => (remF[i] !== null && rejF[i] !== null) ? load[i] - remF[i] - rejF[i] : null);
   const fisTot = [0, 1].map(i => (remF[i] !== null && rejF[i] !== null) ? remF[i] + rejF[i] : null);
-  return { blk, co, load, remF, rejF, totF, jr, jrNT, jrN, cSisa, cRej, cDisp, cTot, fisDisp, fisTot,
+  return { blk: refBlk, seg, segs, co, userLoad, loadFromLog: !!(seg && seg.start), load, jr, jrNT,
+    cSisa, cRej, cDisp, cTot, remF, rejF, totF, fisDisp, fisTot,
     fisDispSum: sum2(fisDisp), fisTotSum: sum2(fisTot) };
+}
+
+function renderSeg(R) {
+  if (!R.segs.length) { $("tblSeg").innerHTML = ""; return; }
+  const head = `<tr><th class="n">No</th><th>Mulai</th><th>Selesai</th><th class="n">Isi awal</th><th class="n">Tambahan (add cash)</th><th class="n">Counter dispensed</th><th class="n">Jurnal lembar</th><th class="n">Selisih counter - jurnal</th><th>Keterangan</th></tr>`;
+  const body = R.segs.map((s, i) => {
+    const j = segJournal(s, R.co).j;
+    const isi = s.start ? s.isi : R.userLoad;
+    const add = s.adds[0] + s.adds[1];
+    const disp = s.snap.d[0] + s.snap.d[1];
+    const jj = j[0] + j[1];
+    const ket = [];
+    if (s === R.seg) ket.push("<b>Segmen opname</b>");
+    if (!s.start) ket.push("mulai sebelum log pertama, isi awal dari input");
+    if (s.end) ket.push("ditutup reset counter " + esc(s.end.replace("T", " ")));
+    return `<tr><td class="n">${i + 1}</td><td>${s.start ? esc(s.start.replace("T", " ")) : "awal log"}</td><td>${s.end ? esc(s.end.replace("T", " ")) : (R.co ? esc(R.co.replace("T", " ")) : "akhir log")}</td><td class="n">${fmt(isi[0] + isi[1])}</td><td class="n">${add ? signed(add) : "0"}</td><td class="n">${fmt(disp)}</td><td class="n">${fmt(jj)}</td><td class="n ${cls(disp - jj)}">${signed(disp - jj)}</td><td class="small">${ket.join("; ")}</td></tr>`;
+  }).join("");
+  $("tblSeg").innerHTML = head + body;
 }
 
 function diffs(R) {
@@ -329,8 +387,11 @@ function renderRecon(R) {
   html += `<tr><th colspan="4">Selisih</th></tr>`;
   html += diffs(R).map(r => `<tr><td>${esc(r.label)}</td><td class="n ${cls(r.k[0])}">${r.k[0] === null ? "-" : signed(r.k[0])}</td><td class="n ${cls(r.k[1])}">${r.k[1] === null ? "-" : signed(r.k[1])}</td><td class="n ${cls(r.t)}"><b>${r.t === null ? "-" : signed(r.t)}</b></td></tr>`).join("");
   $("tblResult").innerHTML = html;
+  renderSeg(R);
 
   const parts = [];
+  if (R.seg && R.segs.length > 1) parts.push(`Periode ini terbagi ${R.segs.length} segmen karena ada reset counter. Opname dicek terhadap segmen yang berakhir di counter acuan.`);
+  if (R.loadFromLog) parts.push(`Isi awal dan tambahan kaset diambil dari log (segmen mulai ${esc(R.seg.start.replace("T"," "))}).`);
   parts.push(`Counter acuan: ${esc(R.blk.date)} ${esc(R.blk.time)}. Batas jurnal: ${R.co ? esc(R.co.replace("T", " ")) : "semua transaksi"}.`);
   const cDispSum = R.cDisp[0] + R.cDisp[1], cTotSum = R.cTot[0] + R.cTot[1], jrSum = R.jr[0] + R.jr[1];
   if (R.totF !== null) {
@@ -524,6 +585,24 @@ function buildSheets(R, wb) {
   const wsK = XLSX_.utils.aoa_to_sheet(K);
   wsK["!cols"] = [{ wch: 12 }, { wch: 10 }, { wch: 14 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 34 }];
   XLSX_.utils.book_append_sheet(wb, wsK, "Counter & SOP");
+
+  // ---- Segmen ----
+  const G = [[xS("No"), xS("Mulai"), xS("Selesai"), xS("Isi awal kaset 1"), xS("Isi awal kaset 2"), xS("Tambahan kaset 1"), xS("Tambahan kaset 2"), xS("Counter dispensed"), xS("Jurnal lembar"), xS("Selisih counter - jurnal"), xS("Keterangan")]];
+  R.segs.forEach((sg, i) => {
+    const r = G.length + 1;
+    const j = segJournal(sg, R.co).j;
+    const isi = sg.start ? sg.isi : R.userLoad;
+    const disp = sg.snap.d[0] + sg.snap.d[1];
+    const jj = j[0] + j[1];
+    const ket = [];
+    if (sg === R.seg) ket.push("Segmen opname");
+    if (!sg.start) ket.push("mulai sebelum log pertama, isi awal dari input");
+    if (sg.end) ket.push("ditutup reset counter " + sg.end.replace("T", " "));
+    G.push([xN(i + 1), xS(sg.start ? sg.start.replace("T", " ") : "awal log"), xS(sg.end ? sg.end.replace("T", " ") : (R.co ? R.co.replace("T", " ") : "akhir log")), xN(isi[0]), xN(isi[1]), xN(sg.adds[0]), xN(sg.adds[1]), xN(disp), xN(jj), xN(disp - jj, `H${r}-I${r}`), xS(ket.join("; "))]);
+  });
+  const wsG = XLSX_.utils.aoa_to_sheet(G);
+  wsG["!cols"] = [{ wch: 6 }, { wch: 18 }, { wch: 18 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 16 }, { wch: 14 }, { wch: 20 }, { wch: 60 }];
+  XLSX_.utils.book_append_sheet(wb, wsG, "Segmen");
 }
 
 async function exportExcel() {
