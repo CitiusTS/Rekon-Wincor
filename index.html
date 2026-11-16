@@ -38,7 +38,7 @@ button.ghost{background:transparent;color:var(--accent);border:1px solid var(--l
 <body>
 <header>
   <h1>ATM Rekon App</h1>
-  <p>Rekonsiliasi log transaksi ATM, counter mesin, dan opname fisik kas. Data diproses di browser Anda dan tidak dikirim ke mana pun.</p>
+  <p>Rekonsiliasi log transaksi ATM, counter mesin, dan opname fisik kas. Mesin: Wincor PC280 CDM-V4. Data diproses di browser Anda dan tidak dikirim ke mana pun.</p>
 </header>
 
 <section class="card">
@@ -66,7 +66,7 @@ button.ghost{background:transparent;color:var(--accent);border:1px solid var(--l
   <div class="row" style="margin-top:12px">
     <div><div class="lbl">Atau total fisik (sisa + reject), jika hanya punya total</div><input id="totFisik" type="number" class="fill"></div>
   </div>
-  <div class="row"><button id="btnCalc">Hitung rekonsiliasi</button><button class="ghost" id="btnReset">Kosongkan input</button></div>
+  <div class="row"><button id="btnCalc">Hitung rekonsiliasi</button><button class="ghost" id="btnReset">Kosongkan input</button><button id="btnExport">Export Excel (rincian)</button><span id="exportMsg" class="small muted"></span></div>
 </section>
 
 <section class="card" id="secResult" hidden>
@@ -92,6 +92,7 @@ button.ghost{background:transparent;color:var(--accent);border:1px solid var(--l
 
 <footer class="small muted" style="padding:8px 4px 24px">Format log yang dibaca: baris <code>CASH REQUEST</code>, <code>CASH n:c,k;</code>, <code>CASH PRESENTED</code>, <code>CASH TAKEN</code>, blok tabel <code>TYPE 1 TYPE 2</code> (CASSETTE / +REJECTED / +DISPENSED / =TOTAL), dan blok <code>CASH COUNTERS BEFORE/AFTER SOP</code>.</footer>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
 // ================= STATE =================
 const state = { files: [], txns: [], blocks: [], sops: [] };
@@ -147,9 +148,10 @@ function parseJournal(text, name) {
     // --- transactions ---
     if ((m = l.match(/^(\d{2}:\d{2}:\d{2})\s+CASH REQUEST:\s*(\d+)/))) { pend = { t: m[1], req: +m[2], cass: null }; pendTaken = false; continue; }
     if (pend && (m = l.match(/^\d{2}:\d{2}:\d{2}\s+CASH (\d):(\d),(\d+);/))) { pend.cass = +m[2]; continue; }
+    if (pend && /Present ERROR/.test(l)) { pend.notes = (pend.notes || []).concat(l.replace(/^\d{2}:\d{2}:\d{2}\s*/, "").trim()); continue; }
     if (pend && /CASH PRESENTED/.test(l)) {
       if (pend.cass !== null) {
-        lastTxn = { file: name, date, time: pend.t, kaset: pend.cass, lembar: pend.req, taken: pendTaken, notes: [] };
+        lastTxn = { file: name, date, time: pend.t, kaset: pend.cass, lembar: pend.req, taken: pendTaken, notes: pend.notes || [] };
         txns.push(lastTxn);
       }
       pend = null; continue;
@@ -267,77 +269,293 @@ function renderTxn() {
 }
 
 // ================= RECONCILIATION =================
-function reconcile() {
-  const blk = state.blocks[+$("refBlock").value];
-  if (!blk) { alert("Belum ada blok counter di log."); return; }
+const numOrNull = id => ($(id).value === "" ? null : +$(id).value);
+const sum2 = a => (a[0] === null || a[1] === null || a[0] === undefined || a[1] === undefined) ? null : a[0] + a[1];
+const dd = (x, y) => (x === null || y === null || x === undefined || y === undefined) ? null : x - y;
+
+function compute() {
+  const blk = state.blocks[+$("refBlock").value] || null;
   const co = cutoffIso();
   const load = [+$("load1").value || 0, +$("load2").value || 0];
-  const remF = [$("rem1").value, $("rem2").value].map(v => v === "" ? null : +v);
-  const rejF = [$("rej1").value, $("rej2").value].map(v => v === "" ? null : +v);
-  const totF = $("totFisik").value === "" ? null : +$("totFisik").value;
-
-  // journal sums up to cutoff (or all)
-  const jr = [0, 0], jrNT = [0, 0];
+  const remF = [numOrNull("rem1"), numOrNull("rem2")];
+  const rejF = [numOrNull("rej1"), numOrNull("rej2")];
+  const totF = numOrNull("totFisik");
+  const jr = [0, 0], jrNT = [0, 0], jrN = [0, 0];
   for (const t of state.txns) {
     if (co && t.dt > co) continue;
-    jr[t.kaset - 1] += t.lembar; if (!t.taken) jrNT[t.kaset - 1] += t.lembar;
+    jr[t.kaset - 1] += t.lembar; jrN[t.kaset - 1]++;
+    if (!t.taken) jrNT[t.kaset - 1] += t.lembar;
   }
-
-  const cSisa = blk.c, cRej = blk.r, cDisp = blk.d;
+  const cSisa = blk ? blk.c : [0, 0], cRej = blk ? blk.r : [0, 0], cDisp = blk ? blk.d : [0, 0];
   const cTot = [cSisa[0] + cRej[0], cSisa[1] + cRej[1]];
-  const fisDispPerK = [0, 1].map(i => (remF[i] !== null && rejF[i] !== null) ? load[i] - remF[i] - rejF[i] : null);
-  const fisTotPerK = [0, 1].map(i => (remF[i] !== null && rejF[i] !== null) ? remF[i] + rejF[i] : null);
-  const sumOrNull = a => a.some(v => v === null) ? null : a[0] + a[1];
+  const fisDisp = [0, 1].map(i => (remF[i] !== null && rejF[i] !== null) ? load[i] - remF[i] - rejF[i] : null);
+  const fisTot = [0, 1].map(i => (remF[i] !== null && rejF[i] !== null) ? remF[i] + rejF[i] : null);
+  return { blk, co, load, remF, rejF, totF, jr, jrNT, jrN, cSisa, cRej, cDisp, cTot, fisDisp, fisTot,
+    fisDispSum: sum2(fisDisp), fisTotSum: sum2(fisTot) };
+}
 
-  const rows = [
-    ["Isi awal kaset (input)", load[0], load[1], load[0] + load[1], "n"],
-    ["Counter: dispensed", cDisp[0], cDisp[1], cDisp[0] + cDisp[1], "n"],
-    ["Counter: sisa di kaset", cSisa[0], cSisa[1], cSisa[0] + cSisa[1], "n"],
-    ["Counter: reject", cRej[0], cRej[1], cRej[0] + cRej[1], "n"],
-    ["Counter: sisa + reject", cTot[0], cTot[1], cTot[0] + cTot[1], "n"],
-    ["Jurnal: lembar keluar (s/d batas)", jr[0], jr[1], jr[0] + jr[1], "n"],
-    ["Jurnal: tidak diambil nasabah (sudah termasuk di atas)", jrNT[0], jrNT[1], jrNT[0] + jrNT[1], "n"],
-    ["Fisik: sisa kaset", remF[0], remF[1], sumOrNull(remF), "n"],
-    ["Fisik: reject", rejF[0], rejF[1], sumOrNull(rejF), "n"],
-    ["Fisik: sisa + reject", fisTotPerK[0], fisTotPerK[1], sumOrNull(fisTotPerK), "n"],
-    ["Fisik: lembar keluar (isi awal - sisa - reject)", fisDispPerK[0], fisDispPerK[1], sumOrNull(fisDispPerK), "n"],
+function diffs(R) {
+  const cDispSum = R.cDisp[0] + R.cDisp[1], jrSum = R.jr[0] + R.jr[1], cTotSum = R.cTot[0] + R.cTot[1];
+  const out = [
+    { label: "Selisih counter - jurnal (lembar keluar)", k: [R.cDisp[0] - R.jr[0], R.cDisp[1] - R.jr[1]], t: cDispSum - jrSum },
+    { label: "Selisih fisik - counter (lembar keluar)", k: [dd(R.fisDisp[0], R.cDisp[0]), dd(R.fisDisp[1], R.cDisp[1])], t: dd(R.fisDispSum, cDispSum) },
+    { label: "Selisih fisik - jurnal (lembar keluar)", k: [dd(R.fisDisp[0], R.jr[0]), dd(R.fisDisp[1], R.jr[1])], t: dd(R.fisDispSum, jrSum) },
+    { label: "Selisih fisik sisa - counter sisa", k: [dd(R.remF[0], R.cSisa[0]), dd(R.remF[1], R.cSisa[1])], t: dd(sum2(R.remF), R.cSisa[0] + R.cSisa[1]) },
+    { label: "Selisih fisik reject - counter reject", k: [dd(R.rejF[0], R.cRej[0]), dd(R.rejF[1], R.cRej[1])], t: dd(sum2(R.rejF), R.cRej[0] + R.cRej[1]) },
   ];
-  const diffs = [];
-  const diffRow = (label, a, b, c, d) => diffs.push([label, a, b, c, d]);
-  const dd = (x, y) => (x === null || y === null) ? null : x - y;
-  diffRow("Selisih counter - jurnal (lembar keluar)", cDisp[0] - jr[0], cDisp[1] - jr[1], cDisp[0] + cDisp[1] - (jr[0] + jr[1]));
-  diffRow("Selisih fisik - counter (lembar keluar)", dd(fisDispPerK[0], cDisp[0]), dd(fisDispPerK[1], cDisp[1]), dd(sumOrNull(fisDispPerK), cDisp[0] + cDisp[1]));
-  diffRow("Selisih fisik - jurnal (lembar keluar)", dd(fisDispPerK[0], jr[0]), dd(fisDispPerK[1], jr[1]), dd(sumOrNull(fisDispPerK), jr[0] + jr[1]));
-  diffRow("Selisih fisik sisa - counter sisa", dd(remF[0], cSisa[0]), dd(remF[1], cSisa[1]), dd(sumOrNull(remF), cSisa[0] + cSisa[1]));
-  diffRow("Selisih fisik reject - counter reject", dd(rejF[0], cRej[0]), dd(rejF[1], cRej[1]), dd(sumOrNull(rejF), cRej[0] + cRej[1]));
+  if (R.totF !== null) {
+    out.push({ label: "Selisih total fisik (sisa + reject) - counter", k: [null, null], t: R.totF - cTotSum });
+    out.push({ label: "Selisih (isi awal - total fisik) - counter dispensed", k: [null, null], t: (R.load[0] + R.load[1] - R.totF) - cDispSum });
+  }
+  return out;
+}
 
+function renderRecon(R) {
+  const rowsHtml = [
+    ["Isi awal kaset (input)", R.load[0], R.load[1], R.load[0] + R.load[1]],
+    ["Counter: dispensed", R.cDisp[0], R.cDisp[1], R.cDisp[0] + R.cDisp[1]],
+    ["Counter: sisa di kaset", R.cSisa[0], R.cSisa[1], R.cSisa[0] + R.cSisa[1]],
+    ["Counter: reject", R.cRej[0], R.cRej[1], R.cRej[0] + R.cRej[1]],
+    ["Counter: sisa + reject", R.cTot[0], R.cTot[1], R.cTot[0] + R.cTot[1]],
+    ["Jurnal: lembar keluar (s/d batas)", R.jr[0], R.jr[1], R.jr[0] + R.jr[1]],
+    ["Jurnal: tidak diambil nasabah (sudah termasuk di atas)", R.jrNT[0], R.jrNT[1], R.jrNT[0] + R.jrNT[1]],
+    ["Fisik: sisa kaset", R.remF[0], R.remF[1], sum2(R.remF)],
+    ["Fisik: reject", R.rejF[0], R.rejF[1], sum2(R.rejF)],
+    ["Fisik: sisa + reject", R.fisTot[0], R.fisTot[1], R.fisTotSum],
+    ["Fisik: lembar keluar (isi awal - sisa - reject)", R.fisDisp[0], R.fisDisp[1], R.fisDispSum],
+  ];
   let html = `<tr><th></th><th class="n">Kaset 1</th><th class="n">Kaset 2</th><th class="n">Total</th></tr>`;
-  html += rows.map(r => `<tr><td>${esc(r[0])}</td><td class="n">${fmt(r[1])}</td><td class="n">${fmt(r[2])}</td><td class="n"><b>${fmt(r[3])}</b></td></tr>`).join("");
+  html += rowsHtml.map(r => `<tr><td>${esc(r[0])}</td><td class="n">${fmt(r[1])}</td><td class="n">${fmt(r[2])}</td><td class="n"><b>${fmt(r[3])}</b></td></tr>`).join("");
   html += `<tr><th colspan="4">Selisih</th></tr>`;
-  html += diffs.map(r => `<tr><td>${esc(r[0])}</td><td class="n ${cls(r[1])}">${signed(r[1])}</td><td class="n ${cls(r[2])}">${signed(r[2])}</td><td class="n ${cls(r[3])}"><b>${signed(r[3])}</b></td></tr>`).join("");
+  html += diffs(R).map(r => `<tr><td>${esc(r.label)}</td><td class="n ${cls(r.k[0])}">${r.k[0] === null ? "-" : signed(r.k[0])}</td><td class="n ${cls(r.k[1])}">${r.k[1] === null ? "-" : signed(r.k[1])}</td><td class="n ${cls(r.t)}"><b>${r.t === null ? "-" : signed(r.t)}</b></td></tr>`).join("");
   $("tblResult").innerHTML = html;
 
-  // verdict
   const parts = [];
-  parts.push(`Counter acuan: ${esc(blk.date)} ${esc(blk.time)}. Batas jurnal: ${co ? esc(co.replace("T", " ")) : "semua transaksi"}.`);
-  if (totF !== null) {
-    const seharusnya = cTot[0] + cTot[1];
-    const sel = totF - seharusnya;
-    parts.push(`Total fisik (sisa + reject) ${fmt(totF)} dibanding counter ${fmt(seharusnya)}: selisih <b class="${cls(sel)}">${signed(sel)} lembar</b> (${sel === 0 ? "sesuai" : sel < 0 ? "fisik kurang" : "fisik lebih"}).`);
-    const keluarFisik = load[0] + load[1] - totF;
-    const keluarCounter = cDisp[0] + cDisp[1];
-    const sel2 = keluarFisik - keluarCounter;
-    parts.push(`Lembar keluar menurut fisik (isi awal ${fmt(load[0]+load[1])} - total fisik) = ${fmt(keluarFisik)}; counter dispensed = ${fmt(keluarCounter)}; selisih <b class="${cls(sel2)}">${signed(sel2)} lembar</b>.`);
+  parts.push(`Counter acuan: ${esc(R.blk.date)} ${esc(R.blk.time)}. Batas jurnal: ${R.co ? esc(R.co.replace("T", " ")) : "semua transaksi"}.`);
+  const cDispSum = R.cDisp[0] + R.cDisp[1], cTotSum = R.cTot[0] + R.cTot[1], jrSum = R.jr[0] + R.jr[1];
+  if (R.totF !== null) {
+    const sel = R.totF - cTotSum;
+    parts.push(`Total fisik (sisa + reject) ${fmt(R.totF)} dibanding counter ${fmt(cTotSum)}: selisih <b class="${cls(sel)}">${signed(sel)} lembar</b> (${sel === 0 ? "sesuai" : sel < 0 ? "fisik kurang" : "fisik lebih"}).`);
+    const keluarFisik = R.load[0] + R.load[1] - R.totF;
+    const sel2 = keluarFisik - cDispSum;
+    parts.push(`Lembar keluar menurut fisik (isi awal ${fmt(R.load[0] + R.load[1])} - total fisik) = ${fmt(keluarFisik)}; counter dispensed = ${fmt(cDispSum)}; selisih <b class="${cls(sel2)}">${signed(sel2)} lembar</b>.`);
   }
-  if (remF[0] !== null && rejF[0] !== null && remF[1] !== null && rejF[1] !== null) {
-    const s = sumOrNull(fisDispPerK) - (cDisp[0] + cDisp[1]);
-    parts.push(`Per kaset: selisih dispense kaset 1 ${signed(fisDispPerK[0]-cDisp[0])}, kaset 2 ${signed(fisDispPerK[1]-cDisp[1])}.`);
-  }
-  if (co === "" ) parts.push(`<span class="muted">Tanpa batas waktu, jurnal mencakup seluruh file. Isi batas waktu opname agar perbandingan dengan jurnal sesuai periode.</span>`);
-  parts.push(`Selisih counter vs jurnal ${signed(cDisp[0]+cDisp[1]-(jr[0]+jr[1]))} lembar. Selisih ini wajar jika ada transaksi di luar file jurnal yang diunggah (misalnya hari sebelumnya).`);
+  if (R.fisDispSum !== null) parts.push(`Per kaset (dari sisa dan reject fisik): selisih dispense kaset 1 ${signed(R.fisDisp[0] - R.cDisp[0])}, kaset 2 ${signed(R.fisDisp[1] - R.cDisp[1])}.`);
+  if (!R.co) parts.push(`<span class="muted">Tanpa batas waktu, jurnal mencakup seluruh file. Isi batas waktu opname agar perbandingan dengan jurnal sesuai periode.</span>`);
+  parts.push(`Selisih counter vs jurnal ${signed(cDispSum - jrSum)} lembar. Selisih ini wajar jika ada transaksi di luar file jurnal yang diunggah (misalnya hari sebelumnya).`);
   $("verdict").innerHTML = parts.join("<br>");
+}
+
+function reconcile() {
+  const R = compute();
+  if (!R.blk) { alert("Belum ada blok counter di log."); return; }
+  renderRecon(R);
   $("secResult").hidden = false;
   $("secResult").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// ================= EXCEL EXPORT =================
+const XL_NUMF = '#,##0;-#,##0;"-"';
+const XL_EPOCH = Date.UTC(1899, 11, 30);
+const xDate = ds => { const [y, m, d] = ds.split("-").map(Number); return { t: "n", v: (Date.UTC(y, m - 1, d) - XL_EPOCH) / 86400000, z: "dd/mm/yyyy" }; };
+const xTime = ts => { const [h, m, s] = ts.split(":").map(Number); return { t: "n", v: (h * 3600 + m * 60 + s) / 86400, z: "hh:mm:ss" }; };
+const xS = v => ({ t: "s", v: String(v ?? "") });
+const xN = (v, f) => (v === null || v === undefined) ? { t: "s", v: "-" } : (f ? { t: "n", v, f, z: XL_NUMF } : { t: "n", v, z: XL_NUMF });
+
+function buildSheets(R, wb) {
+  const XLSX_ = XLSX;
+  // ---- Ringkasan ----
+  const A = [], rowOf = {};
+  const push = row => { A.push(row); return A.length; };
+  push([xS("LAPORAN REKONSILIASI KAS ATM")]);
+  push([xS("Mesin"), xS("Wincor PC280 CDM-V4")]);
+  push([xS("Batas waktu opname"), xS(R.co ? R.co.replace("T", " ") : "Semua transaksi")]);
+  push([xS("Counter acuan"), xS(`${R.blk.date} ${R.blk.time}`)]);
+  push([xS("File jurnal"), xS(state.files.map(f => f.name).join(", "))]);
+  push([xS("Dibuat"), xS(new Date().toLocaleString("id-ID"))]);
+  push([]);
+  push([xS("Uraian"), xS("Kaset 1"), xS("Kaset 2"), xS("Total")]);
+  const addNum = (key, label, v1, v2, f1, f2) => {
+    const r = A.length + 1; rowOf[key] = r;
+    const tot = (v1 == null || v2 == null) ? null : v1 + v2;
+    push([xS(label), xN(v1, f1), xN(v2, f2), xN(tot, (v1 == null || v2 == null) ? null : `B${r}+C${r}`)]);
+  };
+  addNum("isi", "Isi awal kaset (input)", R.load[0], R.load[1]);
+  addNum("cdisp", "Counter: dispensed", R.cDisp[0], R.cDisp[1]);
+  addNum("csisa", "Counter: sisa di kaset", R.cSisa[0], R.cSisa[1]);
+  addNum("crej", "Counter: reject", R.cRej[0], R.cRej[1]);
+  addNum("ctot", "Counter: sisa + reject", R.cTot[0], R.cTot[1], `B${A.length + 0}+B${A.length + 0}`, null);
+  // fix ctot formulas to reference rows explicitly
+  { const r = rowOf.ctot; A[r - 1] = [xS("Counter: sisa + reject"), xN(R.cTot[0], `B${rowOf.csisa}+B${rowOf.crej}`), xN(R.cTot[1], `C${rowOf.csisa}+C${rowOf.crej}`), xN(R.cTot[0] + R.cTot[1], `B${r}+C${r}`)]; }
+  addNum("jr", "Jurnal: lembar keluar (s/d batas)", R.jr[0], R.jr[1]);
+  addNum("jrnt", "Jurnal: tidak diambil nasabah (sudah termasuk di atas)", R.jrNT[0], R.jrNT[1]);
+  addNum("fsisa", "Fisik: sisa kaset", R.remF[0], R.remF[1]);
+  addNum("frej", "Fisik: reject", R.rejF[0], R.rejF[1]);
+  addNum("ftot", "Fisik: sisa + reject (dari sisa dan reject)", R.fisTot[0], R.fisTot[1]);
+  addNum("fdisp", "Fisik: lembar keluar (isi awal - sisa - reject)", R.fisDisp[0], R.fisDisp[1]);
+  push([]);
+  push([xS("SELISIH")]);
+  const selRow = (label, key, f1, f2, k1, k2) => {
+    const r = A.length + 1;
+    const tot = (k1 == null || k2 == null) ? null : k1 + k2;
+    push([xS(label), xN(k1, f1), xN(k2, f2), xN(tot, (k1 == null || k2 == null) ? null : `B${r}+C${r}`)]);
+  };
+  const D = diffs(R);
+  const cnt = {}; // rows of diff rows for formula references
+  selRow("Selisih counter - jurnal (lembar keluar)", "d1", `B${rowOf.cdisp}-B${rowOf.jr}`, `C${rowOf.cdisp}-C${rowOf.jr}`, D[0].k[0], D[0].k[1]);
+  selRow("Selisih fisik - counter (lembar keluar)", "d2", `B${rowOf.fdisp}-B${rowOf.cdisp}`, `C${rowOf.fdisp}-C${rowOf.cdisp}`, D[1].k[0], D[1].k[1]);
+  selRow("Selisih fisik - jurnal (lembar keluar)", "d3", `B${rowOf.fdisp}-B${rowOf.jr}`, `C${rowOf.fdisp}-C${rowOf.jr}`, D[2].k[0], D[2].k[1]);
+  selRow("Selisih fisik sisa - counter sisa", "d4", `B${rowOf.fsisa}-B${rowOf.csisa}`, `C${rowOf.fsisa}-C${rowOf.csisa}`, D[3].k[0], D[3].k[1]);
+  selRow("Selisih fisik reject - counter reject", "d5", `B${rowOf.frej}-B${rowOf.crej}`, `C${rowOf.frej}-C${rowOf.crej}`, D[4].k[0], D[4].k[1]);
+  // Total fisik (manual) section
+  if (R.totF !== null) {
+    push([]);
+    push([xS("TOTAL FISIK (input manual: sisa + reject)")]);
+    const rT = A.length + 1; rowOf.totF = rT;
+    push([xS("Total fisik (sisa + reject)"), xS(""), xS(""), xN(R.totF)]);
+    const rC = A.length + 1;
+    push([xS("Counter sisa + reject"), xS(""), xS(""), xN(R.cTot[0] + R.cTot[1], `B${rowOf.ctot}+C${rowOf.ctot}`)]);
+    const rS = A.length + 1;
+    push([xS("Selisih total fisik - counter"), xS(""), xS(""), xN(R.totF - (R.cTot[0] + R.cTot[1]), `D${rT}-D${rC}`)]);
+    const rK = A.length + 1;
+    push([xS("Lembar keluar fisik (isi awal - total fisik)"), xS(""), xS(""), xN(R.load[0] + R.load[1] - R.totF, `(B${rowOf.isi}+C${rowOf.isi})-D${rT}`)]);
+    push([xS("Selisih lembar keluar fisik - counter dispensed"), xS(""), xS(""), xN((R.load[0] + R.load[1] - R.totF) - (R.cDisp[0] + R.cDisp[1]), `D${rK}-D${rowOf.cdisp}`)]);
+  }
+  push([]);
+  push([xS("Catatan: selisih counter - jurnal wajar jika ada transaksi di luar file jurnal yang diunggah (misalnya hari sebelumnya). Lihat sheet 'Perlu Dicek' untuk transaksi yang tidak diambil atau bermasalah."), ]);
+  const wsR = XLSX_.utils.aoa_to_sheet(A);
+  wsR["!cols"] = [{ wch: 52 }, { wch: 18 }, { wch: 18 }, { wch: 18 }];
+  XLSX_.utils.book_append_sheet(wb, wsR, "Ringkasan");
+
+  // ---- Input Opname ----
+  const B = [];
+  B.push([xS("Kaset"), xS("Isi awal"), xS("Counter dispensed"), xS("Counter sisa"), xS("Counter reject"), xS("Fisik sisa"), xS("Fisik reject"), xS("Fisik dispense (= isi - sisa - reject)"), xS("Selisih dispense (fisik - counter)"), xS("Selisih sisa (fisik - counter)"), xS("Selisih reject (fisik - counter)")]);
+  for (let i = 0; i < 2; i++) {
+    const r = B.length + 1;
+    const rem = R.remF[i], rej = R.rejF[i];
+    B.push([
+      xS(`Kaset ${i + 1}`),
+      xN(R.load[i]),
+      xN(R.cDisp[i]),
+      xN(R.cSisa[i]),
+      xN(R.cRej[i]),
+      xN(rem),
+      xN(rej),
+      xN(R.fisDisp[i], `IF(OR(F${r}="",G${r}=""),"",B${r}-F${r}-G${r})`),
+      xN(R.fisDisp[i] === null ? null : R.fisDisp[i] - R.cDisp[i], `IF(H${r}="","",H${r}-C${r})`),
+      xN(rem === null ? null : rem - R.cSisa[i], `IF(F${r}="","",F${r}-D${r})`),
+      xN(rej === null ? null : rej - R.cRej[i], `IF(G${r}="","",G${r}-E${r})`),
+    ]);
+  }
+  const rt = B.length + 1;
+  const sumF = c => ({ t: "n", v: 0, f: `SUM(${c}2:${c}3)`, z: XL_NUMF });
+  B.push([xS("TOTAL"), xN(R.load[0] + R.load[1], "SUM(B2:B3)"), xN(R.cDisp[0] + R.cDisp[1], "SUM(C2:C3)"), xN(R.cSisa[0] + R.cSisa[1], "SUM(D2:D3)"), xN(R.cRej[0] + R.cRej[1], "SUM(E2:E3)"), xN(R.remF[0] !== null && R.remF[1] !== null ? R.remF[0] + R.remF[1] : null, "IF(COUNT(F2:F3)=2,SUM(F2:F3),\"\")"), xN(R.rejF[0] !== null && R.rejF[1] !== null ? R.rejF[0] + R.rejF[1] : null, "IF(COUNT(G2:G3)=2,SUM(G2:G3),\"\")"), xN(R.fisDispSum, "IF(COUNT(H2:H3)=2,SUM(H2:H3),\"\")"), xN(R.fisDispSum === null ? null : R.fisDispSum - (R.cDisp[0] + R.cDisp[1]), "IF(COUNT(H2:H3)=2,H4-C4,\"\")"), xN(R.remF[0] !== null && R.remF[1] !== null ? (R.remF[0] + R.remF[1]) - (R.cSisa[0] + R.cSisa[1]) : null, "IF(COUNT(F2:F3)=2,F4-D4,\"\")"), xN(R.rejF[0] !== null && R.rejF[1] !== null ? (R.rejF[0] + R.rejF[1]) - (R.cRej[0] + R.cRej[1]) : null, "IF(COUNT(G2:G3)=2,G4-E4,\"\")")]);
+  B.push([]);
+  B.push([xS("Total fisik (sisa + reject) hitung manual"), xN(R.totF)]);
+  B.push([xS("Counter sisa + reject"), xN(R.cTot[0] + R.cTot[1], "D4+E4")]);
+  B.push([xS("Selisih total fisik - counter"), xN(R.totF === null ? null : R.totF - (R.cTot[0] + R.cTot[1]), "IF(B6=\"\",\"\",B6-B7)")]);
+  B.push([]);
+  B.push([xS("Counter acuan"), xS(`${R.blk.date} ${R.blk.time}`)]);
+  B.push([xS("Batas waktu opname"), xS(R.co ? R.co.replace("T", " ") : "Semua transaksi")]);
+  const wsB = XLSX_.utils.aoa_to_sheet(B);
+  wsB["!cols"] = [{ wch: 36 }, { wch: 12 }, { wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 24 }, { wch: 24 }, { wch: 22 }, { wch: 22 }];
+  XLSX_.utils.book_append_sheet(wb, wsB, "Input Opname");
+
+  // ---- Harian ----
+  const byDay = {};
+  for (const t of state.txns) {
+    const d = t.date || "?";
+    byDay[d] = byDay[d] || { k1: 0, k2: 0, n: 0, nt: 0 };
+    if (t.kaset === 1) byDay[d].k1 += t.lembar; else byDay[d].k2 += t.lembar;
+    byDay[d].n++; if (!t.taken) byDay[d].nt += t.lembar;
+  }
+  const H = [[xS("Tanggal"), xS("Kaset 1"), xS("Kaset 2"), xS("Total lembar"), xS("Total nominal"), xS("Jumlah transaksi"), xS("Lembar tidak diambil")]];
+  Object.keys(byDay).sort().forEach(d => {
+    const r = H.length + 1, x = byDay[d];
+    H.push([d === "?" ? xS("?") : xDate(d), xN(x.k1), xN(x.k2), xN(x.k1 + x.k2, `B${r}+C${r}`), xN((x.k1 + x.k2) * 100000, `D${r}*100000`), xN(x.n), xN(x.nt)]);
+  });
+  const hl = H.length;
+  H.push([xS("TOTAL"), xN(0, `SUM(B2:B${hl})`), xN(0, `SUM(C2:C${hl})`), xN(0, `SUM(D2:D${hl})`), xN(0, `SUM(E2:E${hl})`), xN(0, `SUM(F2:F${hl})`), xN(0, `SUM(G2:G${hl})`)]);
+  // fill computed totals as cached values
+  { const T = H[H.length - 1]; let a = 0, b = 0, c = 0, e = 0, f = 0, g = 0;
+    for (let i = 1; i < hl; i++) { a += H[i][1].v; b += H[i][2].v; c += H[i][3].v; e += H[i][4].v; f += H[i][5].v; g += H[i][6].v; }
+    T[1].v = a; T[2].v = b; T[3].v = c; T[4].v = e; T[5].v = f; T[6].v = g; }
+  const wsH = XLSX_.utils.aoa_to_sheet(H);
+  wsH["!cols"] = [{ wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 18 }, { wch: 16 }, { wch: 18 }];
+  XLSX_.utils.book_append_sheet(wb, wsH, "Harian");
+
+  // ---- Transaksi ----
+  const T = [[xS("No"), xS("Tanggal"), xS("Jam"), xS("Kaset"), xS("Lembar"), xS("Nominal"), xS("Status"), xS("Masuk s/d opname"), xS("Catatan"), xS("File jurnal")]];
+  state.txns.forEach((t, i) => {
+    const r = i + 2;
+    const inCut = !R.co || t.dt <= R.co;
+    T.push([xN(i + 1), xDate(t.date), xTime(t.time), xN(t.kaset), xN(t.lembar), xN(t.lembar * 100000, `E${r}*100000`), xS(t.taken ? "Diambil" : "Tidak diambil"), xS(inCut ? "Ya" : "Tidak"), xS(t.notes.join("; ")), xS(t.file)]);
+  });
+  const tl = state.txns.length + 1;
+  const tot = [xS("TOTAL"), xS(""), xS(""), xS(""), xN(R.jr[0] + R.jr[1] + 0, `SUM(E2:E${tl})`), xN(0, `SUM(F2:F${tl})`)];
+  let sumL = 0; state.txns.forEach(t => sumL += t.lembar); tot[4].v = sumL; tot[5].v = sumL * 100000;
+  T.push([]); T.push(tot);
+  const wsT = XLSX_.utils.aoa_to_sheet(T);
+  wsT["!cols"] = [{ wch: 6 }, { wch: 12 }, { wch: 10 }, { wch: 8 }, { wch: 9 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 50 }, { wch: 34 }];
+  wsT["!autofilter"] = { ref: `A1:J${tl}` };
+  XLSX_.utils.book_append_sheet(wb, wsT, "Transaksi");
+
+  // ---- Perlu Dicek ----
+  const P = [[xS("Tanggal"), xS("Jam"), xS("Kaset"), xS("Lembar"), xS("Status"), xS("Keterangan log"), xS("File jurnal"), xS("Hasil pengecekan fisik (isi)")]];
+  state.txns.filter(t => !t.taken || t.notes.length).forEach(t => {
+    P.push([xDate(t.date), xTime(t.time), xN(t.kaset), xN(t.lembar), xS(t.taken ? "Diambil" : "Tidak diambil"), xS(t.notes.join("; ")), xS(t.file), xS("")]);
+  });
+  if (P.length === 1) P.push([xS("Tidak ada transaksi yang perlu dicek.")]);
+  const wsP = XLSX_.utils.aoa_to_sheet(P);
+  wsP["!cols"] = [{ wch: 12 }, { wch: 10 }, { wch: 8 }, { wch: 9 }, { wch: 16 }, { wch: 60 }, { wch: 34 }, { wch: 30 }];
+  XLSX_.utils.book_append_sheet(wb, wsP, "Perlu Dicek");
+
+  // ---- Counter & SOP ----
+  const K = [[xS("Tanggal"), xS("Jam blok"), xS("Sisa kaset 1"), xS("Sisa kaset 2"), xS("Reject 1"), xS("Reject 2"), xS("Dispensed 1"), xS("Dispensed 2"), xS("Sisa + reject total"), xS("File")]];
+  state.blocks.forEach(b => {
+    const r = K.length + 1;
+    K.push([xDate(b.date), xTime(b.time), xN(b.c[0]), xN(b.c[1]), xN(b.r[0]), xN(b.r[1]), xN(b.d[0]), xN(b.d[1]), xN(b.c[0] + b.c[1] + b.r[0] + b.r[1], `C${r}+D${r}+E${r}+F${r}`), xS(b.file)]);
+  });
+  K.push([]);
+  K.push([xS("Tanggal"), xS("Jam SOP"), xS("Jenis"), xS("Sisa slot 1"), xS("Sisa slot 2"), xS("Sisa slot 3"), xS("Sisa slot 4"), xS("Reject"), xS("File")]);
+  state.sops.forEach(s => {
+    K.push([xDate(s.date), xTime(s.time), xS(s.type === "BEFORE" ? "Sebelum SOP" : "Sesudah SOP"), xN(s.rows[0]), xN(s.rows[1]), xN(s.rows[2]), xN(s.rows[3]), xN(s.rejects), xS(s.file)]);
+  });
+  const wsK = XLSX_.utils.aoa_to_sheet(K);
+  wsK["!cols"] = [{ wch: 12 }, { wch: 10 }, { wch: 14 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 34 }];
+  XLSX_.utils.book_append_sheet(wb, wsK, "Counter & SOP");
+}
+
+async function exportExcel() {
+  if (!state.files.length) { alert("Belum ada file log yang diunggah."); return; }
+  const R = compute();
+  if (!R.blk) { alert("Belum ada blok counter di log."); return; }
+  if (typeof XLSX === "undefined") { alert("Library Excel belum termuat. Muat ulang halaman lalu coba lagi."); return; }
+  $("exportMsg").textContent = "Menyiapkan file...";
+  const wb = XLSX.utils.book_new();
+  buildSheets(R, wb);
+  const bytes = new Uint8Array(XLSX.write(wb, { bookType: "xlsx", type: "array" }));
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+  const filename = `Rekon_ATM_${stamp}.xlsx`;
+  let ns = null;
+  try { ns = (window.claude && window.claude.use) ? await window.claude.use("downloads") : null; } catch (e) { ns = null; }
+  if (!ns) {
+    // Cadangan: unduh langsung lewat browser (berfungsi saat file HTML dibuka sendiri di Chrome/Edge).
+    const url = URL.createObjectURL(new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    $("exportMsg").textContent = "File Excel diunduh.";
+    return;
+  }
+  try {
+    await ns.save({ filename, data: bytes });
+    $("exportMsg").textContent = "File Excel tersimpan.";
+  } catch (e) {
+    if (e && e.code === "declined") { $("exportMsg").textContent = "Penyimpanan dibatalkan."; return; }
+    $("exportMsg").textContent = "Gagal menyimpan file: " + (e && e.message ? e.message : "tidak diketahui");
+  }
 }
 
 // ================= EVENTS =================
@@ -348,6 +566,7 @@ $("file").addEventListener("change", e => loadFiles([...e.target.files]));
 drop.addEventListener("drop", e => loadFiles([...e.dataTransfer.files]));
 $("cutoff").addEventListener("change", () => { autoPickBlock(); });
 $("btnCalc").addEventListener("click", reconcile);
+$("btnExport").addEventListener("click", exportExcel);
 $("btnReset").addEventListener("click", () => {
   ["rem1","rej1","rem2","rej2","totFisik"].forEach(id => $(id).value = "");
   $("secResult").hidden = true;
